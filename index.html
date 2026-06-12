@@ -7,7 +7,7 @@
 <title>CORNER KINGS — mobile RTS prototype</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  html,body { width:100%; height:100%; overflow:hidden; background:#14110f;
+  html,body { width:100%; height:100%; overflow:hidden; background:#16120e;
     font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     touch-action:none; user-select:none; -webkit-user-select:none; }
   #game { position:absolute; inset:0; }
@@ -18,13 +18,13 @@
     display:flex; justify-content:center; gap:14px; pointer-events:none;
     color:#fff; font-weight:800; font-size:17px; text-shadow:0 2px 0 #000;
   }
-  #hud span { background:rgba(0,0,0,.45); border-radius:10px; padding:4px 10px; }
+  #hud span { background:rgba(0,0,0,.5); border-radius:10px; padding:4px 10px; }
 
   #bar {
     position:absolute; left:0; right:0; bottom:0;
     padding:8px 8px calc(env(safe-area-inset-bottom,0px) + 8px);
     display:flex; gap:8px; justify-content:center;
-    background:linear-gradient(transparent, rgba(0,0,0,.55) 30%);
+    background:linear-gradient(transparent, rgba(0,0,0,.6) 30%);
   }
   .btn {
     flex:1; max-width:108px; border:0; border-radius:14px; padding:8px 2px 7px;
@@ -33,14 +33,14 @@
   }
   .btn .big { font-size:24px; display:block; }
   .btn .cost { color:#7fe05f; font-size:12px; }
-  .btn .cost.resp { color:#ffd24a; }
+  .btn .cost.resp { color:#ffd24a; font-size:12px; }
   .btn:disabled { opacity:.38; }
   .btn:active:not(:disabled) { transform:translateY(2px); border-bottom-width:2px; }
   #squadBtn { background:#103a5c; }
 
   #overlay {
     position:absolute; inset:0; display:none; flex-direction:column; align-items:center;
-    justify-content:center; gap:16px; background:rgba(10,8,6,.82); z-index:10; text-align:center;
+    justify-content:center; gap:16px; background:rgba(10,8,6,.84); z-index:10; text-align:center;
   }
   #overlay h1 { color:#ffd24a; font-size:42px; letter-spacing:2px; text-shadow:0 4px 0 #000; }
   #overlay p { color:#eee; font-size:17px; max-width:300px; line-height:1.5; }
@@ -82,14 +82,17 @@
 // ---------------------------------------------------------------- constants
 const W = 720, H = 1280;                 // logical resolution (portrait)
 const PLAYER = 1, ENEMY = 2;
-const TEAM_COLOR = { 1:'#3db4ff', 2:'#ff5d5d' };
-const TEAM_DARK  = { 1:'#0d2c40', 2:'#401111' };
+const TEAM_COLOR = { 1:'#46b4ff', 2:'#ff5d5d' };
+const TEAM_BODY  = { 1:'#2f86c8', 2:'#cc4a44' };   // hoodie colors
+const TEAM_CAP   = { 1:'#173f63', 2:'#641a17' };
+const TEAM_DARK  = { 1:'rgba(40,120,190,.16)', 2:'rgba(200,70,60,.16)' };
+const SKIN = ['#8d5a3b','#6b4226','#c68a5b','#4a2f1d','#a06a42'];
 
 const TYPES = {
-  youngin: { emoji:'🧢', cost:60,  hp:60,  dmg:6,  spd:115, cap:2, r:15, bounty:2,  size:30 },
-  muscle:  { emoji:'💪', cost:120, hp:140, dmg:14, spd:82,  cap:1, r:17, bounty:4,  size:34 },
-  big:     { emoji:'🏋️', cost:240, hp:320, dmg:22, spd:60,  cap:1, r:21, bounty:8,  size:42 },
-  og:      { emoji:'👑', cost:0,   hp:400, dmg:28, spd:95,  cap:1, r:20, bounty:25, size:42 },
+  youngin: { emoji:'🧢', cost:60,  hp:60,  dmg:6,  spd:115, cap:2, r:15, bounty:2 },
+  muscle:  { emoji:'💪', cost:120, hp:140, dmg:14, spd:82,  cap:1, r:17, bounty:4 },
+  big:     { emoji:'🏋️', cost:240, hp:320, dmg:22, spd:60,  cap:1, r:21, bounty:8 },
+  og:      { emoji:'👑', cost:0,   hp:400, dmg:28, spd:95,  cap:1, r:20, bounty:25 },
 };
 const OG_COST = 100;            // respect
 const AGGRO = 150, ATTACK_CD = 0.8;
@@ -97,6 +100,9 @@ const CAP_RADIUS = 72, CAP_NEED = 100;
 const HQ_HP = 1100, HQ_R = 58;
 const PORCH_RANGE = 150, PORCH_DMG = 30, PORCH_CD = 0.9;  // clubhouse fights back
 const LOCK_TIME = 15;           // hold every corner this long to win
+// difficulty: the rival crew earns slower, thinks slower, starts smaller,
+// and stays off your half of the block early on
+const AI_INCOME = 0.55, AI_THINK = 2.6, AI_GRACE = 60, AI_MAX_CREW = 10;
 
 // ---------------------------------------------------------------- state
 let units, hqs, corners, team, fx, lockTimer, over, time;
@@ -106,7 +112,7 @@ function reset() {
   lockTimer = { 1:0, 2:0 };
   team = {
     1:{ cash:120, resp:0, hasOG:false },
-    2:{ cash:120, resp:0, hasOG:false, rot:0, think:0 },
+    2:{ cash:90,  resp:0, hasOG:false, rot:0, think:0 },
   };
   hqs = {
     1:{ team:1, x:W/2, y:H-178, hp:HQ_HP, cd:0 },
@@ -120,7 +126,7 @@ function reset() {
     { x:550, y:860, owner:0, prog:0, progTeam:0, mult:1 },
   ];
   spawn(PLAYER,'youngin'); spawn(PLAYER,'youngin');
-  spawn(ENEMY,'youngin');  spawn(ENEMY,'youngin');
+  spawn(ENEMY,'youngin');
   document.getElementById('overlay').style.display = 'none';
 }
 
@@ -130,8 +136,10 @@ function spawn(t, type) {
   units.push({
     team:t, type, def,
     x: hq.x + Math.cos(a)*d, y: hq.y + Math.sin(a)*d,
-    hp: def.hp, cd: 0, sel: false,
-    order: null,            // {x,y, target?}  null = idle
+    hp: def.hp, cd: 0, sel: false, moving:false,
+    tone: SKIN[Math.floor(Math.random()*SKIN.length)],
+    phase: Math.random()*7,
+    order: null,            // {x,y}  null = idle
     target: null,           // current combat target (unit or hq)
   });
 }
@@ -156,7 +164,8 @@ function ogAuraBoost(u){          // +25% damage near a friendly OG
   return 1;
 }
 
-function addFx(x,y,txt,col){ fx.push({x,y,txt,col,t:0}); }
+function addFx(x,y,txt,col){ fx.push({kind:'txt',x,y,txt,col,t:0}); }
+function addPuff(x,y){ fx.push({kind:'puff',x,y,t:0}); }
 
 // ---------------------------------------------------------------- simulation
 function update(dt) {
@@ -167,6 +176,7 @@ function update(dt) {
   for (const t of [PLAYER, ENEMY]) {
     let inc = 8, held = 0;
     for (const c of corners) if (c.owner===t){ inc += 5*c.mult; held++; }
+    if (t===ENEMY) inc *= AI_INCOME;
     team[t].cash += inc*dt;
     const rivalHeld = corners.filter(c=>c.owner===(t===1?2:1)).length;
     if (held > rivalHeld) team[t].resp += 1*dt;
@@ -187,7 +197,7 @@ function update(dt) {
     let mvx=0, mvy=0;
     const tgt = u.target;
     if (tgt) {
-      const isHq = tgt.team!==undefined && tgt.hp!==undefined && tgt.def===undefined;
+      const isHq = tgt.def===undefined;
       const reach = u.def.r + (isHq?HQ_R:tgt.def.r) + 6;
       const d = dist(u,tgt);
       if (d > reach) { mvx=(tgt.x-u.x)/d; mvy=(tgt.y-u.y)/d; }
@@ -195,7 +205,7 @@ function update(dt) {
         u.cd = ATTACK_CD;
         const dmg = u.def.dmg * ogAuraBoost(u);
         tgt.hp -= dmg;
-        addFx((u.x+tgt.x)/2, (u.y+tgt.y)/2, '💥', '#fff');
+        addPuff((u.x+tgt.x)/2, (u.y+tgt.y)/2);
         if (tgt.hp<=0) {
           if (isHq) return endGame(u.team,'hq');
           team[u.team].resp += tgt.def.bounty;
@@ -208,11 +218,12 @@ function update(dt) {
       if (d < 8) u.order = null;
       else { mvx=(u.order.x-u.x)/d; mvy=(u.order.y-u.y)/d; }
     }
+    u.moving = (mvx!==0 || mvy!==0);
     u.x += mvx*u.def.spd*dt; u.y += mvy*u.def.spd*dt;
     clampToField(u);
   }
 
-  // gentle separation so squads don't stack into one emoji
+  // gentle separation so squads don't stack into one blob
   for (let i=0;i<units.length;i++) for (let j=i+1;j<units.length;j++) {
     const a=units[i], b=units[j];
     if (a.hp<=0||b.hp<=0) continue;
@@ -273,26 +284,28 @@ function aiThink(dt) {
   const ai = team[ENEMY];
   ai.think -= dt;
   if (ai.think>0) return;
-  ai.think = 1.8;
-
-  // recruit on a rotation: youngin, muscle, youngin, big
-  const rot = ['youngin','muscle','youngin','big'];
-  const want = rot[ai.rot % 4];
-  if (ai.cash >= TYPES[want].cost) { ai.cash -= TYPES[want].cost; spawn(ENEMY,want); ai.rot++; }
-  if (!ai.hasOG && ai.resp >= OG_COST) { ai.resp -= OG_COST; ai.hasOG = true; spawn(ENEMY,'og'); }
+  ai.think = AI_THINK;
 
   const mine   = units.filter(u=>u.team===ENEMY);
   const theirs = units.filter(u=>u.team===PLAYER);
 
-  // power sense: big lead -> rush the player's clubhouse
-  if (mine.length >= theirs.length + 4 && mine.length >= 6) {
+  // recruit on a rotation: youngin, muscle, youngin, big (army size capped)
+  const rot = ['youngin','muscle','youngin','big'];
+  const want = rot[ai.rot % 4];
+  if (mine.length < AI_MAX_CREW && ai.cash >= TYPES[want].cost) {
+    ai.cash -= TYPES[want].cost; spawn(ENEMY,want); ai.rot++;
+  }
+  if (!ai.hasOG && ai.resp >= OG_COST) { ai.resp -= OG_COST; ai.hasOG = true; spawn(ENEMY,'og'); }
+
+  // power sense: only commit to a clubhouse rush with a serious numbers lead
+  if (mine.length >= theirs.length + 5 && mine.length >= 8) {
     for (const u of mine) if (!u.target) u.order = { x:hqs[PLAYER].x, y:hqs[PLAYER].y };
     return;
   }
   // otherwise: idle units push the nearest corner we don't own (center favored).
-  // Grace period: leave the player's two home corners alone for the first 45s
+  // Grace period: leave the player's two home corners alone early on
   // so new players get room to learn the controls.
-  const reachable = corners.filter(c => c.owner!==ENEMY && (time>45 || c.y<700));
+  const reachable = corners.filter(c => c.owner!==ENEMY && (time>AI_GRACE || c.y<700));
   for (const u of mine) {
     if (u.order || u.target) continue;
     let best=null, bs=Infinity;
@@ -331,6 +344,11 @@ const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 let scale=1, offX=0, offY=0;
 
+if (typeof CanvasRenderingContext2D !== 'undefined' &&
+    !CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h){ this.rect(x,y,w,h); };
+}
+
 function resize() {
   const dpr = Math.min(window.devicePixelRatio||1, 2);
   cv.width  = innerWidth*dpr; cv.height = innerHeight*dpr;
@@ -342,56 +360,252 @@ function resize() {
 }
 addEventListener('resize', resize);
 
+// ---- static neighborhood backdrop, painted once to an offscreen canvas ----
+const bg = document.createElement('canvas');
+bg.width = W; bg.height = H;
+
+function building(g, x, y, w, h, wall) {
+  g.fillStyle = wall; g.fillRect(x, y, w, h);
+  g.fillStyle = 'rgba(0,0,0,.3)'; g.fillRect(x, y, w, 10);          // parapet
+  g.fillStyle = 'rgba(255,255,255,.07)'; g.fillRect(x, y+10, 4, h-10); // edge light
+  const cols = Math.max(2, Math.floor(w/34)), rows = Math.max(2, Math.floor((h-26)/40));
+  for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {
+    const wx = x + 12 + c*((w-24)/cols), wy = y + 22 + r*((h-32)/rows);
+    g.fillStyle = (Math.random()<0.3) ? '#ffd27f' : '#222a36';      // some windows lit
+    g.fillRect(wx, wy, (w-24)/cols-9, 22);
+  }
+}
+
+function zebra(g, x, y, vertical) {       // crosswalk stripes
+  g.fillStyle = 'rgba(235,230,220,.55)';
+  for (let i=-2;i<=2;i++) {
+    if (vertical) g.fillRect(x-26, y+i*14-4, 52, 8);
+    else g.fillRect(x+i*14-4, y-26, 8, 52);
+  }
+}
+
+function buildBG() {
+  const g = bg.getContext('2d');
+  // asphalt base with wear
+  g.fillStyle = '#37332d'; g.fillRect(0,0,W,H);
+  for (let i=0;i<320;i++) {
+    g.fillStyle = 'rgba(0,0,0,'+(Math.random()*0.10)+')';
+    const s = Math.random()*34+8;
+    g.fillRect(Math.random()*W, Math.random()*H, s, s*0.55);
+  }
+  // sidewalk frame
+  g.fillStyle = '#4c463d';
+  g.fillRect(0,250,24,H-500); g.fillRect(W-24,250,24,H-500);
+  g.strokeStyle='rgba(0,0,0,.25)'; g.lineWidth=2;
+  for (let y=250;y<H-250;y+=64){ g.beginPath(); g.moveTo(0,y); g.lineTo(24,y);
+    g.moveTo(W-24,y); g.lineTo(W,y); g.stroke(); }
+
+  // brownstone skyline, top and bottom (clubhouses sit in the gaps)
+  const walls = ['#5b4636','#4f4f5c','#5d5340','#46504a'];
+  building(g,   8,  46, 112, 196, walls[0]);
+  building(g, 128,  28, 114, 214, walls[1]);
+  building(g, 478,  38, 112, 204, walls[2]);
+  building(g, 598,  62, 114, 180, walls[3]);
+  building(g,   8,1040, 112, 196, walls[2]);
+  building(g, 128,1040, 114, 178, walls[3]);
+  building(g, 478,1040, 112, 188, walls[1]);
+  building(g, 598,1040, 114, 200, walls[0]);
+  // graffiti tags on the walls
+  g.font = 'bold 30px sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  g.save(); g.translate(64,225); g.rotate(-0.06);
+  g.fillStyle='#ff9d2e'; g.fillText('916', 0, 0); g.restore();
+  g.save(); g.translate(652,1062); g.rotate(0.05);
+  g.fillStyle='#7fe05f'; g.fillText('CK', 0, 0); g.restore();
+
+  // streets
+  g.strokeStyle = '#403b34'; g.lineWidth = 58; g.lineCap='round';
+  g.beginPath();
+  g.moveTo(170,300); g.lineTo(170,980);
+  g.moveTo(550,300); g.lineTo(550,980);
+  g.moveTo(110,420); g.lineTo(610,420);
+  g.moveTo(110,860); g.lineTo(610,860);
+  g.moveTo(170,420); g.lineTo(550,860);
+  g.moveTo(550,420); g.lineTo(170,860);
+  g.stroke();
+  // lane dashes
+  g.setLineDash([16,20]); g.strokeStyle='#5d564a'; g.lineWidth=3;
+  g.beginPath();
+  g.moveTo(170,300); g.lineTo(170,980);
+  g.moveTo(550,300); g.lineTo(550,980);
+  g.moveTo(110,420); g.lineTo(610,420);
+  g.moveTo(110,860); g.lineTo(610,860);
+  g.stroke(); g.setLineDash([]);
+  zebra(g, 170, 640, true); zebra(g, 550, 640, true);
+  zebra(g, 360, 420, false); zebra(g, 360, 860, false);
+
+  // basketball court at the center corner
+  g.fillStyle = '#3d6b63';
+  g.fillRect(360-115, 640-85, 230, 170);
+  g.strokeStyle = 'rgba(240,240,235,.7)'; g.lineWidth = 3;
+  g.strokeRect(360-115, 640-85, 230, 170);
+  g.beginPath(); g.arc(360, 640, 34, 0, 7); g.stroke();
+  g.beginPath(); g.moveTo(360-115, 640); g.lineTo(360+115, 640); g.stroke();
+  g.beginPath(); g.arc(360, 640-85, 30, 0, Math.PI); g.stroke();
+  g.beginPath(); g.arc(360, 640+85, 30, Math.PI, 0); g.stroke();
+
+  // street props
+  g.font = '30px serif';
+  g.fillText('🌳', 70, 330);  g.fillText('🌳', 650, 330);
+  g.fillText('🌳', 70, 952);  g.fillText('🌳', 650, 952);
+  g.fillText('🗑️', 320, 312); g.fillText('🛹', 408, 972);
+  g.fillText('🚗', 64, 640);  g.fillText('🚙', 656, 640);
+
+  // golden-hour wash
+  const grad = g.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'rgba(255,170,80,.07)');
+  grad.addColorStop(1,'rgba(10,10,40,.16)');
+  g.fillStyle = grad; g.fillRect(0,0,W,H);
+}
+
+// ---- characters ----
+function drawUnit(u) {
+  const r = u.def.r, body = TEAM_BODY[u.team], cap = TEAM_CAP[u.team];
+  const bob = u.moving ? Math.sin(time*9 + u.phase)*2 : 0;
+  const x = u.x, y = u.y + bob;
+
+  // shadow + selection
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.beginPath(); ctx.ellipse(u.x, u.y + r*0.95, r*0.85, r*0.32, 0, 0, 7); ctx.fill();
+  if (u.sel) {
+    ctx.beginPath(); ctx.arc(u.x, u.y, r+9, 0, 7);
+    ctx.setLineDash([6,5]); ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const bw = r*1.55, bh = r*1.25, by = y + r*0.12;
+  // muscle arms poke out of the tank top
+  if (u.type==='muscle') {
+    ctx.fillStyle = u.tone;
+    ctx.beginPath(); ctx.arc(x-bw/2-2, by, r*0.34, 0, 7);
+    ctx.arc(x+bw/2+2, by, r*0.34, 0, 7); ctx.fill();
+  }
+  // body
+  ctx.fillStyle = body;
+  ctx.beginPath(); ctx.roundRect(x-bw/2, by-bh/2, bw, bh, r*0.5); ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.stroke();
+  // OG chain
+  if (u.type==='og') {
+    ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, by-bh/2+2, r*0.5, 0.3, Math.PI-0.3); ctx.stroke();
+  }
+  // head
+  const hr = r*0.55, hy = y - r*0.62;
+  ctx.fillStyle = u.tone;
+  ctx.beginPath(); ctx.arc(x, hy, hr, 0, 7); ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle='rgba(0,0,0,.4)'; ctx.stroke();
+
+  // headwear by type
+  if (u.type==='youngin') {                 // backwards cap
+    ctx.fillStyle = cap;
+    ctx.beginPath(); ctx.arc(x, hy, hr+1, Math.PI, 0); ctx.fill();
+    ctx.fillRect(x+hr*0.4, hy-hr*0.25, hr*0.9, 4);
+  } else if (u.type==='muscle') {           // beanie + shades
+    ctx.fillStyle = cap;
+    ctx.beginPath(); ctx.arc(x, hy-1, hr+1, Math.PI, 0); ctx.fill();
+    ctx.fillRect(x-hr-1, hy-hr*0.35, (hr+1)*2, 4);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(x-hr*0.8, hy-1, hr*1.6, 4);
+  } else if (u.type==='big') {              // hood up
+    ctx.strokeStyle = body; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(x, hy, hr+2, Math.PI*0.85, Math.PI*2.15); ctx.stroke();
+  } else if (u.type==='og') {               // the crown
+    ctx.fillStyle = '#ffd24a';
+    ctx.beginPath();
+    ctx.moveTo(x-hr, hy-hr*0.5);
+    ctx.lineTo(x-hr, hy-hr-6);  ctx.lineTo(x-hr*0.4, hy-hr*0.75);
+    ctx.lineTo(x,    hy-hr-8);  ctx.lineTo(x+hr*0.4, hy-hr*0.75);
+    ctx.lineTo(x+hr, hy-hr-6);  ctx.lineTo(x+hr, hy-hr*0.5);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // hp bar
+  ctx.fillStyle='#000'; ctx.fillRect(u.x-16, u.y-r-16, 32, 5);
+  ctx.fillStyle = u.hp/u.def.hp>0.35 ? '#7fe05f' : '#ff7043';
+  ctx.fillRect(u.x-16, u.y-r-16, 32*u.hp/u.def.hp, 5);
+}
+
+function drawHQ(t) {
+  const h = hqs[t], col = TEAM_COLOR[t];
+  // claim zone
+  ctx.beginPath(); ctx.arc(h.x, h.y, HQ_R+14, 0, 7);
+  ctx.fillStyle = TEAM_DARK[t]; ctx.fill();
+  ctx.setLineDash([10,8]); ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.stroke();
+  ctx.setLineDash([]);
+  // the clubhouse
+  const bx = h.x-62, by = h.y-50, bwid = 124, bhei = 96;
+  ctx.fillStyle = t===PLAYER ? '#4a3a30' : '#3c3340';
+  ctx.fillRect(bx, by, bwid, bhei);
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(bx, by, bwid, 12);   // parapet
+  ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.fillRect(bx, by+12, 5, bhei-12);
+  // lit windows in crew color
+  ctx.fillStyle = col;
+  ctx.globalAlpha = .85;
+  ctx.fillRect(bx+16, by+24, 26, 24); ctx.fillRect(bx+82, by+24, 26, 24);
+  ctx.globalAlpha = 1;
+  // door + stoop
+  ctx.fillStyle = '#241c16'; ctx.fillRect(h.x-15, by+bhei-36, 30, 36);
+  ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.strokeRect(h.x-15, by+bhei-36, 30, 36);
+  ctx.fillStyle = '#3a342c';
+  ctx.fillRect(h.x-24, by+bhei, 48, 8); ctx.fillRect(h.x-30, by+bhei+8, 60, 8);
+  // crew flag
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(bx+bwid-12, by); ctx.lineTo(bx+bwid-12, by-26); ctx.stroke();
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.moveTo(bx+bwid-12, by-26); ctx.lineTo(bx+bwid+14, by-19);
+  ctx.lineTo(bx+bwid-12, by-12); ctx.closePath(); ctx.fill();
+  // hp + label
+  ctx.fillStyle='#000'; ctx.fillRect(h.x-52, h.y+HQ_R+18, 104, 10);
+  ctx.fillStyle=col; ctx.fillRect(h.x-52, h.y+HQ_R+18, 104*Math.max(0,h.hp)/HQ_HP, 10);
+  ctx.font='bold 15px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#fff';
+  ctx.fillText(t===PLAYER?'YOUR CLUBHOUSE':'RIVAL CLUBHOUSE',
+    h.x, h.y + (t===PLAYER ? HQ_R+44 : -(HQ_R+30)));
+}
+
 function draw() {
   ctx.save();
-  ctx.fillStyle = '#14110f';
+  ctx.fillStyle = '#16120e';
   ctx.fillRect(0,0,innerWidth,innerHeight);
   ctx.translate(offX,offY); ctx.scale(scale,scale);
 
-  // asphalt + streets
-  ctx.fillStyle = '#2b2723'; ctx.fillRect(0,0,W,H);
-  ctx.strokeStyle = '#3a352f'; ctx.lineWidth = 56;
-  ctx.beginPath();
-  ctx.moveTo(170,300); ctx.lineTo(170,980);
-  ctx.moveTo(550,300); ctx.lineTo(550,980);
-  ctx.moveTo(110,420); ctx.lineTo(610,420);
-  ctx.moveTo(110,860); ctx.lineTo(610,860);
-  ctx.moveTo(170,420); ctx.lineTo(550,860);
-  ctx.moveTo(550,420); ctx.lineTo(170,860);
-  ctx.stroke();
-  ctx.setLineDash([14,18]); ctx.strokeStyle='#564f44'; ctx.lineWidth=3;
-  ctx.beginPath(); ctx.moveTo(170,300); ctx.lineTo(170,980);
-  ctx.moveTo(550,300); ctx.lineTo(550,980); ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.drawImage(bg, 0, 0);
 
-  // corners
+  // corners: painted capture rings on the pavement
   for (const c of corners) {
+    if (c.owner) {
+      ctx.beginPath(); ctx.arc(c.x,c.y,CAP_RADIUS,0,7);
+      ctx.fillStyle = TEAM_DARK[c.owner]; ctx.fill();
+    }
     ctx.beginPath(); ctx.arc(c.x,c.y,CAP_RADIUS,0,7);
-    ctx.fillStyle = c.owner ? TEAM_DARK[c.owner] : '#211d19'; ctx.fill();
     ctx.lineWidth = 5;
-    ctx.strokeStyle = c.owner ? TEAM_COLOR[c.owner] : '#6b6257'; ctx.stroke();
+    ctx.strokeStyle = c.owner ? TEAM_COLOR[c.owner] : 'rgba(220,210,190,.5)';
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(c.x,c.y,CAP_RADIUS-10,0,7);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = c.owner ? TEAM_COLOR[c.owner] : 'rgba(220,210,190,.3)';
+    ctx.stroke();
     if (c.prog>0 && c.progTeam) {
       ctx.beginPath();
-      ctx.arc(c.x,c.y,CAP_RADIUS-9, -Math.PI/2, -Math.PI/2 + (c.prog/CAP_NEED)*Math.PI*2);
-      ctx.strokeStyle = TEAM_COLOR[c.progTeam]; ctx.lineWidth=8; ctx.stroke();
+      ctx.arc(c.x,c.y,CAP_RADIUS-5, -Math.PI/2, -Math.PI/2 + (c.prog/CAP_NEED)*Math.PI*2);
+      ctx.strokeStyle = TEAM_COLOR[c.progTeam]; ctx.lineWidth=9; ctx.stroke();
     }
-    ctx.font = '34px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(c.mult===2?'🏀':'📍', c.x, c.y-4);
-    if (c.mult===2){ ctx.font='bold 16px sans-serif'; ctx.fillStyle='#ffd24a'; ctx.fillText('2×', c.x, c.y+30); }
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    if (c.mult===2) {
+      ctx.font='bold 17px sans-serif'; ctx.fillStyle='#ffd24a';
+      ctx.fillText('2×', c.x+CAP_RADIUS-22, c.y-CAP_RADIUS+22);
+    } else {
+      ctx.font='bold 26px sans-serif';
+      ctx.fillStyle = c.owner ? TEAM_COLOR[c.owner] : 'rgba(220,210,190,.55)';
+      ctx.fillText('$', c.x, c.y);
+    }
   }
 
-  // clubhouses
-  for (const t of [PLAYER,ENEMY]) {
-    const h = hqs[t];
-    ctx.beginPath(); ctx.arc(h.x,h.y,HQ_R,0,7);
-    ctx.fillStyle = TEAM_DARK[t]; ctx.fill();
-    ctx.lineWidth=6; ctx.strokeStyle=TEAM_COLOR[t]; ctx.stroke();
-    ctx.font='56px serif'; ctx.fillText(t===PLAYER?'🏠':'🏚️', h.x, h.y-2);
-    ctx.fillStyle='#000'; ctx.fillRect(h.x-52, h.y+HQ_R+8, 104, 10);
-    ctx.fillStyle=TEAM_COLOR[t]; ctx.fillRect(h.x-52, h.y+HQ_R+8, 104*Math.max(0,h.hp)/HQ_HP, 10);
-    ctx.font='bold 15px sans-serif'; ctx.fillStyle='#fff';
-    ctx.fillText(t===PLAYER?'YOUR CLUBHOUSE':'RIVAL CLUBHOUSE', h.x, h.y + (t===PLAYER? HQ_R+34 : -(HQ_R+22)));
-  }
+  drawHQ(ENEMY); drawHQ(PLAYER);
 
   // whole-block lock countdown
   for (const t of [PLAYER,ENEMY]) if (lockTimer[t]>0.5) {
@@ -399,27 +613,28 @@ function draw() {
     ctx.fillText(`🔒 BLOCK LOCKED IN ${Math.ceil(LOCK_TIME-lockTimer[t])}…`, W/2, 300);
   }
 
-  // units
-  for (const u of units) {
-    if (u.sel) {
-      ctx.beginPath(); ctx.arc(u.x,u.y,u.def.r+8,0,7);
-      ctx.setLineDash([6,5]); ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    ctx.beginPath(); ctx.arc(u.x,u.y,u.def.r+3,0,7);
-    ctx.fillStyle=TEAM_DARK[u.team]; ctx.fill();
-    ctx.lineWidth=3.5; ctx.strokeStyle=TEAM_COLOR[u.team]; ctx.stroke();
-    ctx.font = u.def.size+'px serif';
-    ctx.fillText(u.def.emoji, u.x, u.y+1);
-    ctx.fillStyle='#000'; ctx.fillRect(u.x-16, u.y-u.def.r-12, 32, 5);
-    ctx.fillStyle='#7fe05f'; ctx.fillRect(u.x-16, u.y-u.def.r-12, 32*u.hp/u.def.hp, 5);
-  }
+  // units, back-to-front so overlaps layer naturally
+  const sorted = units.slice().sort((a,b)=>a.y-b.y);
+  for (const u of sorted) drawUnit(u);
 
-  // floating fx
+  // fx
   for (const f of fx) {
-    ctx.globalAlpha = 1 - f.t/0.9;
-    ctx.font = 'bold 24px sans-serif'; ctx.fillStyle = f.col;
-    ctx.fillText(f.txt, f.x, f.y - f.t*46);
+    const k = f.t/0.9;
+    ctx.globalAlpha = 1-k;
+    if (f.kind==='puff') {
+      ctx.fillStyle = '#cfc7b8';
+      for (let i=0;i<3;i++) {
+        const a = f.t*3 + i*2.1;
+        ctx.beginPath();
+        ctx.arc(f.x + Math.cos(a)*10*k*3, f.y + Math.sin(a)*8*k*3 - k*10, 5+k*7, 0, 7);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#fff'; ctx.font='bold 16px sans-serif';
+      ctx.fillText('✦', f.x, f.y - k*22);
+    } else {
+      ctx.font = 'bold 24px sans-serif'; ctx.fillStyle = f.col;
+      ctx.fillText(f.txt, f.x, f.y - f.t*46);
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -524,7 +739,7 @@ function refreshHud() {
   document.getElementById('b_muscle').disabled  = me.cash < 120;
   document.getElementById('b_big').disabled     = me.cash < 240;
   document.getElementById('b_og').disabled      = me.hasOG || me.resp < OG_COST;
-  // player OG can be re-bought if KO'd
+  // OGs can be re-bought once they're KO'd
   if (me.hasOG && !units.some(u=>u.team===PLAYER && u.type==='og')) me.hasOG = false;
   if (team[ENEMY].hasOG && !units.some(u=>u.team===ENEMY && u.type==='og')) team[ENEMY].hasOG = false;
 }
@@ -542,6 +757,7 @@ function frame(now) {
 
 setTimeout(()=>{ document.getElementById('hint').style.opacity = 0; }, 9000);
 resize();
+buildBG();
 reset();
 requestAnimationFrame(frame);
 </script>
