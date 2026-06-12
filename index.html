@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>CORNER KINGS — mobile RTS prototype</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#14110f;
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    touch-action:none; user-select:none; -webkit-user-select:none; }
+  #game { position:absolute; inset:0; }
+  canvas { position:absolute; left:0; top:0; }
+
+  #hud {
+    position:absolute; left:0; right:0; top:0; padding:calc(env(safe-area-inset-top,0px) + 8px) 12px 8px;
+    display:flex; justify-content:center; gap:14px; pointer-events:none;
+    color:#fff; font-weight:800; font-size:17px; text-shadow:0 2px 0 #000;
+  }
+  #hud span { background:rgba(0,0,0,.45); border-radius:10px; padding:4px 10px; }
+
+  #bar {
+    position:absolute; left:0; right:0; bottom:0;
+    padding:8px 8px calc(env(safe-area-inset-bottom,0px) + 8px);
+    display:flex; gap:8px; justify-content:center;
+    background:linear-gradient(transparent, rgba(0,0,0,.55) 30%);
+  }
+  .btn {
+    flex:1; max-width:108px; border:0; border-radius:14px; padding:8px 2px 7px;
+    background:#272019; color:#fff; font-weight:800; font-size:13px; line-height:1.25;
+    border-bottom:4px solid #000; cursor:pointer;
+  }
+  .btn .big { font-size:24px; display:block; }
+  .btn .cost { color:#7fe05f; font-size:12px; }
+  .btn .cost.resp { color:#ffd24a; }
+  .btn:disabled { opacity:.38; }
+  .btn:active:not(:disabled) { transform:translateY(2px); border-bottom-width:2px; }
+  #squadBtn { background:#103a5c; }
+
+  #overlay {
+    position:absolute; inset:0; display:none; flex-direction:column; align-items:center;
+    justify-content:center; gap:16px; background:rgba(10,8,6,.82); z-index:10; text-align:center;
+  }
+  #overlay h1 { color:#ffd24a; font-size:42px; letter-spacing:2px; text-shadow:0 4px 0 #000; }
+  #overlay p { color:#eee; font-size:17px; max-width:300px; line-height:1.5; }
+  #overlay button { font-size:20px; font-weight:800; padding:14px 38px; border-radius:16px;
+    border:0; border-bottom:5px solid #7a3d00; background:#ff9d2e; color:#2b1600; }
+
+  #hint { position:absolute; left:0; right:0; bottom:96px; text-align:center; color:#fff;
+    font-size:14px; font-weight:700; text-shadow:0 2px 0 #000; opacity:.9; pointer-events:none;
+    transition:opacity 1s; }
+</style>
+</head>
+<body>
+<div id="game"><canvas id="cv"></canvas></div>
+
+<div id="hud">
+  <span id="cashEl">💵 0</span>
+  <span id="respEl">✊ 0</span>
+  <span id="cornEl">📍 0/5</span>
+</div>
+
+<div id="hint">Tap a unit to grab its squad · tap the street to send them</div>
+
+<div id="bar">
+  <button class="btn" id="b_youngin"><span class="big">🧢</span>Youngin<br><span class="cost">$60</span></button>
+  <button class="btn" id="b_muscle"><span class="big">💪</span>Muscle<br><span class="cost">$120</span></button>
+  <button class="btn" id="b_big"><span class="big">🏋️</span>Big Homie<br><span class="cost">$240</span></button>
+  <button class="btn" id="b_og"><span class="big">👑</span>The OG<br><span class="cost resp">✊100</span></button>
+  <button class="btn" id="squadBtn"><span class="big">🔊</span>SQUAD<br>UP</button>
+</div>
+
+<div id="overlay">
+  <h1 id="ovTitle">YOU RUN THE BLOCK</h1>
+  <p id="ovText"></p>
+  <button id="restart">RUN IT BACK</button>
+</div>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- constants
+const W = 720, H = 1280;                 // logical resolution (portrait)
+const PLAYER = 1, ENEMY = 2;
+const TEAM_COLOR = { 1:'#3db4ff', 2:'#ff5d5d' };
+const TEAM_DARK  = { 1:'#0d2c40', 2:'#401111' };
+
+const TYPES = {
+  youngin: { emoji:'🧢', cost:60,  hp:60,  dmg:6,  spd:115, cap:2, r:15, bounty:2,  size:30 },
+  muscle:  { emoji:'💪', cost:120, hp:140, dmg:14, spd:82,  cap:1, r:17, bounty:4,  size:34 },
+  big:     { emoji:'🏋️', cost:240, hp:320, dmg:22, spd:60,  cap:1, r:21, bounty:8,  size:42 },
+  og:      { emoji:'👑', cost:0,   hp:400, dmg:28, spd:95,  cap:1, r:20, bounty:25, size:42 },
+};
+const OG_COST = 100;            // respect
+const AGGRO = 150, ATTACK_CD = 0.8;
+const CAP_RADIUS = 72, CAP_NEED = 100;
+const HQ_HP = 1100, HQ_R = 58;
+const PORCH_RANGE = 150, PORCH_DMG = 30, PORCH_CD = 0.9;  // clubhouse fights back
+const LOCK_TIME = 15;           // hold every corner this long to win
+
+// ---------------------------------------------------------------- state
+let units, hqs, corners, team, fx, lockTimer, over, time;
+
+function reset() {
+  units = []; fx = []; over = false; time = 0;
+  lockTimer = { 1:0, 2:0 };
+  team = {
+    1:{ cash:120, resp:0, hasOG:false },
+    2:{ cash:120, resp:0, hasOG:false, rot:0, think:0 },
+  };
+  hqs = {
+    1:{ team:1, x:W/2, y:H-178, hp:HQ_HP, cd:0 },
+    2:{ team:2, x:W/2, y:178,   hp:HQ_HP, cd:0 },
+  };
+  corners = [
+    { x:170, y:420, owner:0, prog:0, progTeam:0, mult:1 },
+    { x:550, y:420, owner:0, prog:0, progTeam:0, mult:1 },
+    { x:360, y:640, owner:0, prog:0, progTeam:0, mult:2 },   // center: double pay
+    { x:170, y:860, owner:0, prog:0, progTeam:0, mult:1 },
+    { x:550, y:860, owner:0, prog:0, progTeam:0, mult:1 },
+  ];
+  spawn(PLAYER,'youngin'); spawn(PLAYER,'youngin');
+  spawn(ENEMY,'youngin');  spawn(ENEMY,'youngin');
+  document.getElementById('overlay').style.display = 'none';
+}
+
+function spawn(t, type) {
+  const def = TYPES[type], hq = hqs[t];
+  const a = Math.random()*Math.PI*2, d = HQ_R + 30 + Math.random()*20;
+  units.push({
+    team:t, type, def,
+    x: hq.x + Math.cos(a)*d, y: hq.y + Math.sin(a)*d,
+    hp: def.hp, cd: 0, sel: false,
+    order: null,            // {x,y, target?}  null = idle
+    target: null,           // current combat target (unit or hq)
+  });
+}
+
+// ---------------------------------------------------------------- helpers
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+function clampToField(u){ u.x=Math.max(24,Math.min(W-24,u.x)); u.y=Math.max(250,Math.min(H-250,u.y)); }
+
+function nearestEnemy(u, maxD) {
+  let best=null, bd=maxD;
+  for (const e of units) if (e.team!==u.team && e.hp>0) {
+    const d = dist(u,e); if (d<bd){ bd=d; best=e; }
+  }
+  const hq = hqs[u.team===1?2:1];
+  if (hq.hp>0) { const d = dist(u,hq)-HQ_R; if (d<bd){ bd=d; best=hq; } }
+  return best;
+}
+
+function ogAuraBoost(u){          // +25% damage near a friendly OG
+  for (const o of units)
+    if (o!==u && o.team===u.team && o.type==='og' && o.hp>0 && dist(u,o)<130) return 1.25;
+  return 1;
+}
+
+function addFx(x,y,txt,col){ fx.push({x,y,txt,col,t:0}); }
+
+// ---------------------------------------------------------------- simulation
+function update(dt) {
+  if (over) return;
+  time += dt;
+
+  // income (per-second tick folded into dt)
+  for (const t of [PLAYER, ENEMY]) {
+    let inc = 8, held = 0;
+    for (const c of corners) if (c.owner===t){ inc += 5*c.mult; held++; }
+    team[t].cash += inc*dt;
+    const rivalHeld = corners.filter(c=>c.owner===(t===1?2:1)).length;
+    if (held > rivalHeld) team[t].resp += 1*dt;
+    // whole-block lock victory timer
+    lockTimer[t] = (held===corners.length) ? lockTimer[t]+dt : 0;
+    if (lockTimer[t] >= LOCK_TIME) return endGame(t, 'lock');
+  }
+
+  // units
+  for (const u of units) {
+    if (u.hp<=0) continue;
+    u.cd = Math.max(0, u.cd-dt);
+
+    // pick / keep a combat target
+    if (u.target && (u.target.hp<=0)) u.target=null;
+    if (!u.target) u.target = nearestEnemy(u, AGGRO);
+
+    let mvx=0, mvy=0;
+    const tgt = u.target;
+    if (tgt) {
+      const isHq = tgt.team!==undefined && tgt.hp!==undefined && tgt.def===undefined;
+      const reach = u.def.r + (isHq?HQ_R:tgt.def.r) + 6;
+      const d = dist(u,tgt);
+      if (d > reach) { mvx=(tgt.x-u.x)/d; mvy=(tgt.y-u.y)/d; }
+      else if (u.cd===0) {
+        u.cd = ATTACK_CD;
+        const dmg = u.def.dmg * ogAuraBoost(u);
+        tgt.hp -= dmg;
+        addFx((u.x+tgt.x)/2, (u.y+tgt.y)/2, '💥', '#fff');
+        if (tgt.hp<=0) {
+          if (isHq) return endGame(u.team,'hq');
+          team[u.team].resp += tgt.def.bounty;
+          if (tgt.type==='og') team[tgt.team].hasOG = false;
+          addFx(tgt.x, tgt.y, '😵', '#fff');
+        }
+      }
+    } else if (u.order) {
+      const d = Math.hypot(u.order.x-u.x, u.order.y-u.y);
+      if (d < 8) u.order = null;
+      else { mvx=(u.order.x-u.x)/d; mvy=(u.order.y-u.y)/d; }
+    }
+    u.x += mvx*u.def.spd*dt; u.y += mvy*u.def.spd*dt;
+    clampToField(u);
+  }
+
+  // gentle separation so squads don't stack into one emoji
+  for (let i=0;i<units.length;i++) for (let j=i+1;j<units.length;j++) {
+    const a=units[i], b=units[j];
+    if (a.hp<=0||b.hp<=0) continue;
+    const d=dist(a,b), min=a.def.r+b.def.r;
+    if (d>0 && d<min){ const p=(min-d)/2/d, dx=(b.x-a.x)*p, dy=(b.y-a.y)*p;
+      a.x-=dx; a.y-=dy; b.x+=dx; b.y+=dy; }
+  }
+
+  // porch defense: the homies at the clubhouse throw hands at attackers
+  for (const t of [PLAYER, ENEMY]) {
+    const hq = hqs[t];
+    hq.cd = Math.max(0, hq.cd-dt);
+    if (hq.cd>0) continue;
+    let foe=null, fd=PORCH_RANGE;
+    for (const u of units) if (u.team!==t && u.hp>0) {
+      const d = dist(u,hq); if (d<fd){ fd=d; foe=u; }
+    }
+    if (foe) {
+      hq.cd = PORCH_CD;
+      foe.hp -= PORCH_DMG;
+      addFx(foe.x, foe.y, '🥊', TEAM_COLOR[t]);
+      if (foe.hp<=0) {
+        team[t].resp += foe.def.bounty;
+        if (foe.type==='og') team[foe.team].hasOG = false;
+        addFx(foe.x, foe.y, '😵', '#fff');
+      }
+    }
+  }
+
+  units = units.filter(u=>u.hp>0);
+
+  // corner capture
+  for (const c of corners) {
+    let p1=0, p2=0;
+    for (const u of units) if (dist(u,c)<CAP_RADIUS)
+      (u.team===PLAYER ? p1+=u.def.cap : p2+=u.def.cap);
+    if (p1>0 && p2>0) continue;                       // contested: frozen
+    const t = p1>0?PLAYER : p2>0?ENEMY : 0;
+    if (!t || t===c.owner) continue;
+    const rate = (t===PLAYER?p1:p2) * 14 * (c.owner!==0?0.8:1);
+    if (c.progTeam!==t){ c.progTeam=t; c.prog=0; }
+    c.prog += rate*dt;
+    if (c.prog>=CAP_NEED) {
+      c.owner=t; c.prog=0; c.progTeam=0;
+      team[t].resp += 10;
+      addFx(c.x, c.y-40, t===PLAYER?'OURS! ✊':'TAKEN!', TEAM_COLOR[t]);
+    }
+  }
+
+  aiThink(dt);
+
+  for (const f of fx) f.t += dt;
+  fx = fx.filter(f=>f.t<0.9);
+}
+
+// ---------------------------------------------------------------- rival AI
+function aiThink(dt) {
+  const ai = team[ENEMY];
+  ai.think -= dt;
+  if (ai.think>0) return;
+  ai.think = 1.8;
+
+  // recruit on a rotation: youngin, muscle, youngin, big
+  const rot = ['youngin','muscle','youngin','big'];
+  const want = rot[ai.rot % 4];
+  if (ai.cash >= TYPES[want].cost) { ai.cash -= TYPES[want].cost; spawn(ENEMY,want); ai.rot++; }
+  if (!ai.hasOG && ai.resp >= OG_COST) { ai.resp -= OG_COST; ai.hasOG = true; spawn(ENEMY,'og'); }
+
+  const mine   = units.filter(u=>u.team===ENEMY);
+  const theirs = units.filter(u=>u.team===PLAYER);
+
+  // power sense: big lead -> rush the player's clubhouse
+  if (mine.length >= theirs.length + 4 && mine.length >= 6) {
+    for (const u of mine) if (!u.target) u.order = { x:hqs[PLAYER].x, y:hqs[PLAYER].y };
+    return;
+  }
+  // otherwise: idle units push the nearest corner we don't own (center favored).
+  // Grace period: leave the player's two home corners alone for the first 45s
+  // so new players get room to learn the controls.
+  const reachable = corners.filter(c => c.owner!==ENEMY && (time>45 || c.y<700));
+  for (const u of mine) {
+    if (u.order || u.target) continue;
+    let best=null, bs=Infinity;
+    for (const c of (reachable.length ? reachable : corners.filter(c=>c.owner!==ENEMY))) {
+      const s = dist(u,c) / c.mult;
+      if (s<bs){ bs=s; best=c; }
+    }
+    if (best) u.order = { x:best.x+(Math.random()*60-30), y:best.y+(Math.random()*60-30) };
+  }
+}
+
+// ---------------------------------------------------------------- endgame
+function endGame(winner, how) {
+  over = true;
+  const ov = document.getElementById('overlay');
+  const title = document.getElementById('ovTitle');
+  const text = document.getElementById('ovText');
+  if (winner===PLAYER) {
+    title.textContent = 'YOU RUN THE BLOCK';
+    title.style.color = '#ffd24a';
+    text.textContent = how==='lock'
+      ? 'Every corner, locked down for 15 straight seconds. Whole block knows your name.'
+      : 'Their clubhouse folded. The block party is at YOUR spot tonight.';
+  } else {
+    title.textContent = 'RAN OFF THE BLOCK';
+    title.style.color = '#ff5d5d';
+    text.textContent = how==='lock'
+      ? 'They held every corner. Regroup, recruit, run it back.'
+      : 'Your clubhouse got shut down. Shake it off and run it back.';
+  }
+  ov.style.display = 'flex';
+}
+
+// ---------------------------------------------------------------- rendering
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let scale=1, offX=0, offY=0;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  cv.width  = innerWidth*dpr; cv.height = innerHeight*dpr;
+  cv.style.width = innerWidth+'px'; cv.style.height = innerHeight+'px';
+  scale = Math.min(innerWidth/W, innerHeight/H);
+  offX = (innerWidth - W*scale)/2;
+  offY = (innerHeight - H*scale)/2;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener('resize', resize);
+
+function draw() {
+  ctx.save();
+  ctx.fillStyle = '#14110f';
+  ctx.fillRect(0,0,innerWidth,innerHeight);
+  ctx.translate(offX,offY); ctx.scale(scale,scale);
+
+  // asphalt + streets
+  ctx.fillStyle = '#2b2723'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle = '#3a352f'; ctx.lineWidth = 56;
+  ctx.beginPath();
+  ctx.moveTo(170,300); ctx.lineTo(170,980);
+  ctx.moveTo(550,300); ctx.lineTo(550,980);
+  ctx.moveTo(110,420); ctx.lineTo(610,420);
+  ctx.moveTo(110,860); ctx.lineTo(610,860);
+  ctx.moveTo(170,420); ctx.lineTo(550,860);
+  ctx.moveTo(550,420); ctx.lineTo(170,860);
+  ctx.stroke();
+  ctx.setLineDash([14,18]); ctx.strokeStyle='#564f44'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(170,300); ctx.lineTo(170,980);
+  ctx.moveTo(550,300); ctx.lineTo(550,980); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // corners
+  for (const c of corners) {
+    ctx.beginPath(); ctx.arc(c.x,c.y,CAP_RADIUS,0,7);
+    ctx.fillStyle = c.owner ? TEAM_DARK[c.owner] : '#211d19'; ctx.fill();
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = c.owner ? TEAM_COLOR[c.owner] : '#6b6257'; ctx.stroke();
+    if (c.prog>0 && c.progTeam) {
+      ctx.beginPath();
+      ctx.arc(c.x,c.y,CAP_RADIUS-9, -Math.PI/2, -Math.PI/2 + (c.prog/CAP_NEED)*Math.PI*2);
+      ctx.strokeStyle = TEAM_COLOR[c.progTeam]; ctx.lineWidth=8; ctx.stroke();
+    }
+    ctx.font = '34px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(c.mult===2?'🏀':'📍', c.x, c.y-4);
+    if (c.mult===2){ ctx.font='bold 16px sans-serif'; ctx.fillStyle='#ffd24a'; ctx.fillText('2×', c.x, c.y+30); }
+  }
+
+  // clubhouses
+  for (const t of [PLAYER,ENEMY]) {
+    const h = hqs[t];
+    ctx.beginPath(); ctx.arc(h.x,h.y,HQ_R,0,7);
+    ctx.fillStyle = TEAM_DARK[t]; ctx.fill();
+    ctx.lineWidth=6; ctx.strokeStyle=TEAM_COLOR[t]; ctx.stroke();
+    ctx.font='56px serif'; ctx.fillText(t===PLAYER?'🏠':'🏚️', h.x, h.y-2);
+    ctx.fillStyle='#000'; ctx.fillRect(h.x-52, h.y+HQ_R+8, 104, 10);
+    ctx.fillStyle=TEAM_COLOR[t]; ctx.fillRect(h.x-52, h.y+HQ_R+8, 104*Math.max(0,h.hp)/HQ_HP, 10);
+    ctx.font='bold 15px sans-serif'; ctx.fillStyle='#fff';
+    ctx.fillText(t===PLAYER?'YOUR CLUBHOUSE':'RIVAL CLUBHOUSE', h.x, h.y + (t===PLAYER? HQ_R+34 : -(HQ_R+22)));
+  }
+
+  // whole-block lock countdown
+  for (const t of [PLAYER,ENEMY]) if (lockTimer[t]>0.5) {
+    ctx.font='bold 26px sans-serif'; ctx.fillStyle=TEAM_COLOR[t];
+    ctx.fillText(`🔒 BLOCK LOCKED IN ${Math.ceil(LOCK_TIME-lockTimer[t])}…`, W/2, 300);
+  }
+
+  // units
+  for (const u of units) {
+    if (u.sel) {
+      ctx.beginPath(); ctx.arc(u.x,u.y,u.def.r+8,0,7);
+      ctx.setLineDash([6,5]); ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.beginPath(); ctx.arc(u.x,u.y,u.def.r+3,0,7);
+    ctx.fillStyle=TEAM_DARK[u.team]; ctx.fill();
+    ctx.lineWidth=3.5; ctx.strokeStyle=TEAM_COLOR[u.team]; ctx.stroke();
+    ctx.font = u.def.size+'px serif';
+    ctx.fillText(u.def.emoji, u.x, u.y+1);
+    ctx.fillStyle='#000'; ctx.fillRect(u.x-16, u.y-u.def.r-12, 32, 5);
+    ctx.fillStyle='#7fe05f'; ctx.fillRect(u.x-16, u.y-u.def.r-12, 32*u.hp/u.def.hp, 5);
+  }
+
+  // floating fx
+  for (const f of fx) {
+    ctx.globalAlpha = 1 - f.t/0.9;
+    ctx.font = 'bold 24px sans-serif'; ctx.fillStyle = f.col;
+    ctx.fillText(f.txt, f.x, f.y - f.t*46);
+    ctx.globalAlpha = 1;
+  }
+
+  // selection drag box
+  if (input.dragging) {
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.setLineDash([8,6]);
+    ctx.strokeRect(Math.min(input.sx,input.cx), Math.min(input.sy,input.cy),
+                   Math.abs(input.cx-input.sx), Math.abs(input.cy-input.sy));
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- input
+const input = { down:false, dragging:false, sx:0, sy:0, cx:0, cy:0 };
+const toField = e => ({ x:(e.clientX-offX)/scale, y:(e.clientY-offY)/scale });
+
+cv.addEventListener('pointerdown', e => {
+  const p = toField(e);
+  input.down = true; input.dragging = false;
+  input.sx = input.cx = p.x; input.sy = input.cy = p.y;
+});
+cv.addEventListener('pointermove', e => {
+  if (!input.down) return;
+  const p = toField(e); input.cx = p.x; input.cy = p.y;
+  if (Math.hypot(p.x-input.sx, p.y-input.sy) > 14) input.dragging = true;
+});
+cv.addEventListener('pointerup', () => {
+  if (!input.down) return;
+  input.down = false;
+  if (over) return;
+  if (input.dragging) {                                   // box select
+    const x1=Math.min(input.sx,input.cx), x2=Math.max(input.sx,input.cx);
+    const y1=Math.min(input.sy,input.cy), y2=Math.max(input.sy,input.cy);
+    let any=false;
+    for (const u of units) {
+      u.sel = u.team===PLAYER && u.x>=x1&&u.x<=x2&&u.y>=y1&&u.y<=y2;
+      any = any || u.sel;
+    }
+    if (!any) for (const u of units) u.sel = false;
+    input.dragging = false;
+    return;
+  }
+  tap(input.sx, input.sy);
+});
+
+function tap(x, y) {
+  const pt = {x, y};
+  // tap own unit -> squad-grab select (it + friends within 80)
+  let hit=null, hd=46;
+  for (const u of units) if (u.team===PLAYER) {
+    const d = dist(u, pt); if (d<hd){ hd=d; hit=u; }
+  }
+  if (hit) {
+    for (const u of units) u.sel = (u.team===PLAYER && dist(u,hit)<80);
+    return;
+  }
+  // tap with a squad selected -> order: focus enemy if tapped, else move
+  const sel = units.filter(u=>u.sel && u.team===PLAYER);
+  if (!sel.length) return;
+  let foe=null, fd=56;
+  for (const u of units) if (u.team===ENEMY) {
+    const d = dist(u, pt); if (d<fd){ fd=d; foe=u; }
+  }
+  const eHq = hqs[ENEMY];
+  const hqHit = dist(eHq, pt) < HQ_R+16 ? eHq : null;
+  for (const u of sel) {
+    u.target = foe || hqHit || null;
+    u.order = { x: x+(Math.random()*44-22), y: y+(Math.random()*44-22) };
+  }
+  addFx(x, y, foe||hqHit ? '⚔️' : '➜', '#fff');
+}
+
+// ---------------------------------------------------------------- UI buttons
+const buttons = {
+  b_youngin:'youngin', b_muscle:'muscle', b_big:'big',
+};
+for (const [id,type] of Object.entries(buttons)) {
+  document.getElementById(id).addEventListener('click', () => {
+    if (over) return;
+    const me = team[PLAYER];
+    if (me.cash >= TYPES[type].cost) { me.cash -= TYPES[type].cost; spawn(PLAYER,type); }
+  });
+}
+document.getElementById('b_og').addEventListener('click', () => {
+  if (over) return;
+  const me = team[PLAYER];
+  if (!me.hasOG && me.resp >= OG_COST) { me.resp -= OG_COST; me.hasOG = true; spawn(PLAYER,'og'); }
+});
+document.getElementById('squadBtn').addEventListener('click', () => {
+  for (const u of units) u.sel = (u.team===PLAYER);
+});
+document.getElementById('restart').addEventListener('click', reset);
+
+function refreshHud() {
+  const me = team[PLAYER];
+  document.getElementById('cashEl').textContent = '💵 ' + Math.floor(me.cash);
+  document.getElementById('respEl').textContent = '✊ ' + Math.floor(me.resp);
+  document.getElementById('cornEl').textContent = '📍 ' +
+    corners.filter(c=>c.owner===PLAYER).length + '/' + corners.length;
+  document.getElementById('b_youngin').disabled = me.cash < 60;
+  document.getElementById('b_muscle').disabled  = me.cash < 120;
+  document.getElementById('b_big').disabled     = me.cash < 240;
+  document.getElementById('b_og').disabled      = me.hasOG || me.resp < OG_COST;
+  // player OG can be re-bought if KO'd
+  if (me.hasOG && !units.some(u=>u.team===PLAYER && u.type==='og')) me.hasOG = false;
+  if (team[ENEMY].hasOG && !units.some(u=>u.team===ENEMY && u.type==='og')) team[ENEMY].hasOG = false;
+}
+
+// ---------------------------------------------------------------- main loop
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now-last)/1000, 0.05);
+  last = now;
+  update(dt);
+  refreshHud();
+  draw();
+  requestAnimationFrame(frame);
+}
+
+setTimeout(()=>{ document.getElementById('hint').style.opacity = 0; }, 9000);
+resize();
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
